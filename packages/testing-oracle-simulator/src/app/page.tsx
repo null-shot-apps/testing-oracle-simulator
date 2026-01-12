@@ -1,84 +1,258 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
+import Lobby from '@/components/Lobby';
+import PublisherView from '@/components/PublisherView';
+import SubscriberView from '@/components/SubscriberView';
+import Dashboard from '@/components/Dashboard';
+import { Player, PriceOption, MedianCalculation, WSMessage } from '@/types/game';
 
-const slogans = [
-  "Turn chats into apps",
-  "Prompt. Ship. Repeat.",
-  "Build anything from a chat",
-  "Ideas → Apps, instantly",
-  "From zero to MVP in minutes",
-  "Your cofounder in the command line",
-  "Draft, iterate, deploy",
-  "Ship faster than you can type",
-  "Design in text, deliver in code",
-  "Dream it. Prompt it. Run it.",
-  "Chat-native app building",
-  "From prompt to product",
-  "One prompt, infinite apps",
-  "Stop scaffolding. Start shipping.",
-  "Prototype at the speed of thought",
-  "Make conversations executable"
-];
+type GamePhase = 'connecting' | 'lobby' | 'playing' | 'finished';
 
-export default function Landing() {
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [isVisible, setIsVisible] = useState(true);
+export default function Game() {
+  const [phase, setPhase] = useState<GamePhase>('connecting');
+  const [players, setPlayers] = useState<Player[]>([]);
+  const [currentPlayer, setCurrentPlayer] = useState<Player | null>(null);
+  const [priceOptions, setPriceOptions] = useState<PriceOption[]>([]);
+  const [medians, setMedians] = useState<Map<string, MedianCalculation>>(new Map());
+  const [timeRemaining, setTimeRemaining] = useState<number>(600000); // 10 minutes
+  const [gameEndTime, setGameEndTime] = useState<number | null>(null);
+  
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      setIsVisible(false);
-      setTimeout(() => {
-        setCurrentIndex((prev) => (prev + 1) % slogans.length);
-        setIsVisible(true);
-      }, 400);
-    }, 2800);
-
-    return () => clearInterval(interval);
+    connectWebSocket();
+    
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+    };
   }, []);
 
-  return (
-    <div className="relative h-[100dvh] w-full overflow-hidden bg-black text-white">
-      {/* Enhanced animated aurora background layers */}
-      <div className="absolute inset-0 bg-aurora-layer-1" />
-      <div className="absolute inset-0 bg-aurora-layer-2" />
-      <div className="absolute inset-0 bg-aurora-layer-3" />
-      
-      {/* Floating particles overlay */}
-      <div className="absolute inset-0 bg-particles" />
-      
-      {/* Main content - centered */}
-      <main className="relative z-10 h-full flex flex-col items-center justify-center px-6">
-        <h1 className="text-center text-[clamp(28px,6vw,64px)] font-medium tracking-tight mb-4">
-          Turn Chats into Apps
-        </h1>
+  useEffect(() => {
+    if (gameEndTime) {
+      const interval = setInterval(() => {
+        const remaining = Math.max(0, gameEndTime - Date.now());
+        setTimeRemaining(remaining);
         
-        {/* Rotating slogans */}
-        <div className="mt-4 h-8 md:h-10 overflow-hidden flex items-center justify-center">
-          <span
-            className={`inline-block text-center text-[clamp(18px,3vw,32px)] font-light transition-all duration-[400ms] ease-in-out ${
-              isVisible ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-2'
-            }`}
-          >
-            {slogans[currentIndex]}
-          </span>
-        </div>
-      </main>
+        if (remaining === 0) {
+          clearInterval(interval);
+        }
+      }, 100);
       
-      {/* Start Prompting arrow pointing left - bottom left */}
-      <div className="absolute left-6 md:left-8 bottom-[5%] z-20 flex items-center gap-3 arrow-point-left">
-        <div className="flex items-center gap-2 text-white/80 font-medium text-sm md:text-base">
-          <svg 
-            className="w-5 h-5 md:w-6 md:h-6 animate-bounce-horizontal" 
-            fill="none" 
-            viewBox="0 0 24 24" 
-            stroke="currentColor"
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-          </svg>
-          <span>Start prompting</span>
+      return () => clearInterval(interval);
+    }
+  }, [gameEndTime]);
+
+  const connectWebSocket = () => {
+    // For development, use mock WebSocket
+    if (process.env.NODE_ENV === 'development') {
+      setupMockGame();
+      return;
+    }
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${protocol}//${window.location.host}/api/ws`);
+    
+    ws.onopen = () => {
+      console.log('WebSocket connected');
+      const playerName = `Player${Math.floor(Math.random() * 1000)}`;
+      sendMessage({ type: 'join', payload: { name: playerName } });
+    };
+    
+    ws.onmessage = (event) => {
+      const message: WSMessage = JSON.parse(event.data);
+      handleMessage(message);
+    };
+    
+    ws.onerror = (error) => {
+      console.error('WebSocket error:', error);
+    };
+    
+    ws.onclose = () => {
+      console.log('WebSocket disconnected');
+      reconnectTimeoutRef.current = setTimeout(() => {
+        connectWebSocket();
+      }, 3000);
+    };
+    
+    wsRef.current = ws;
+  };
+
+  const setupMockGame = () => {
+    // Mock setup for development
+    const mockPlayer: Player = {
+      id: 'player-1',
+      name: 'You',
+      role: null,
+      credits: 1000,
+      subscriberMode: null,
+      submissionCount: 0,
+      accuracyScore: 0,
+      tradesExecuted: 0,
+      profitLoss: 0,
+    };
+
+    const mockOptions: PriceOption[] = [
+      { id: 'btc', name: 'Bitcoin', currentPrice: 45000 },
+      { id: 'eth', name: 'Ethereum', currentPrice: 2500 },
+      { id: 'gold', name: 'Gold', currentPrice: 2000 },
+      { id: 'oil', name: 'Crude Oil', currentPrice: 75 },
+      { id: 'sp500', name: 'S&P 500', currentPrice: 4500 },
+    ];
+
+    setCurrentPlayer(mockPlayer);
+    setPlayers([mockPlayer]);
+    setPriceOptions(mockOptions);
+    setPhase('lobby');
+  };
+
+  const sendMessage = (message: WSMessage) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify(message));
+    }
+  };
+
+  const handleMessage = (message: WSMessage) => {
+    switch (message.type) {
+      case 'game_state':
+        setPlayers(message.payload.players);
+        setCurrentPlayer(message.payload.currentPlayer);
+        setPriceOptions(message.payload.priceOptions);
+        setPhase(message.payload.phase);
+        if (message.payload.gameEndTime) {
+          setGameEndTime(message.payload.gameEndTime);
+        }
+        break;
+      
+      case 'median_update':
+        setMedians(new Map(Object.entries(message.payload.medians)));
+        break;
+      
+      case 'game_end':
+        setPhase('finished');
+        break;
+    }
+  };
+
+  const handleRoleSelect = (role: 'publisher' | 'subscriber') => {
+    if (!currentPlayer) return;
+    
+    const updated = { ...currentPlayer, role };
+    setCurrentPlayer(updated);
+    setPlayers(players.map(p => p.id === currentPlayer.id ? updated : p));
+    
+    sendMessage({ type: 'role_select', payload: { role } });
+  };
+
+  const handleSubscriberModeSelect = (mode: 'pull' | 'push') => {
+    if (!currentPlayer) return;
+    
+    const updated = { 
+      ...currentPlayer, 
+      subscriberMode: mode,
+      credits: mode === 'push' ? currentPlayer.credits - 500 : currentPlayer.credits
+    };
+    setCurrentPlayer(updated);
+    setPlayers(players.map(p => p.id === currentPlayer.id ? updated : p));
+    
+    sendMessage({ type: 'subscribe', payload: { mode } });
+  };
+
+  const handleStartGame = () => {
+    setPhase('playing');
+    setGameEndTime(Date.now() + 600000);
+    sendMessage({ type: 'start_game', payload: {} });
+  };
+
+  const handleSubmitPrice = (optionId: string, price: number) => {
+    sendMessage({ type: 'price_submit', payload: { optionId, price } });
+  };
+
+  const handleTrade = (optionId: string) => {
+    if (!currentPlayer) return;
+    
+    const cost = currentPlayer.subscriberMode === 'pull' ? 2 : 0;
+    const updated = {
+      ...currentPlayer,
+      credits: currentPlayer.credits - cost,
+      tradesExecuted: (currentPlayer.tradesExecuted || 0) + 1,
+    };
+    setCurrentPlayer(updated);
+    setPlayers(players.map(p => p.id === currentPlayer.id ? updated : p));
+    
+    sendMessage({ type: 'trade', payload: { optionId } });
+  };
+
+  const handlePlayAgain = () => {
+    window.location.reload();
+  };
+
+  const canStartGame = players.length >= 3 && 
+    players.every(p => p.role !== null) &&
+    players.filter(p => p.role === 'subscriber').every(p => p.subscriberMode !== null);
+
+  if (phase === 'connecting') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 to-purple-900 text-white flex items-center justify-center">
+        <div className="text-center">
+          <div className="text-4xl mb-4">🎮</div>
+          <div className="text-2xl font-bold">Connecting to game...</div>
         </div>
       </div>
-    </div>
-  );
+    );
+  }
+
+  if (phase === 'lobby') {
+    return (
+      <Lobby
+        players={players}
+        currentPlayer={currentPlayer}
+        onRoleSelect={handleRoleSelect}
+        onSubscriberModeSelect={handleSubscriberModeSelect}
+        onStartGame={handleStartGame}
+        canStartGame={canStartGame}
+      />
+    );
+  }
+
+  if (phase === 'playing' && currentPlayer) {
+    if (currentPlayer.role === 'publisher') {
+      return (
+        <PublisherView
+          priceOptions={priceOptions}
+          onSubmitPrice={handleSubmitPrice}
+          timeRemaining={timeRemaining}
+        />
+      );
+    } else {
+      return (
+        <SubscriberView
+          priceOptions={priceOptions}
+          medians={medians}
+          currentPlayer={currentPlayer}
+          onTrade={handleTrade}
+          timeRemaining={timeRemaining}
+        />
+      );
+    }
+  }
+
+  if (phase === 'finished' && currentPlayer) {
+    return (
+      <Dashboard
+        players={players}
+        currentPlayer={currentPlayer}
+        onPlayAgain={handlePlayAgain}
+      />
+    );
+  }
+
+  return null;
 }
+
